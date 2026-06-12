@@ -1,19 +1,20 @@
 """Agentic loop orchestrator — the heart of the harness.
 
 Implements the full harness flow, in order:
-  1. Load AGENTS.md → inject learned corrections from the ledger
-  2. Initialize the LangChain agent (tools + Gemini + system prompt)
-  3. Run the agentic loop with the user request
-  4. Intercept raw output → run the verification loop
-  5. Verification fails → log to ledger → raise rejection (HTTP 422)
-  6. Verification passes → run guardrails
-  7. Guardrails fail → raise rejection (HTTP 422)
-  8. Log the full run to the observability table
-  9. Return verified output wrapped in the metadata envelope
+   1. Load AGENTS.md → inject learned corrections from the ledger
+   2. Fetch requested files from GitHub → store in run-scoped memory
+   3. Initialize the LangChain agent (tools + Gemini + system prompt)
+   4. Run the agentic loop: agent calls tools, stages doc sections in memory
+   5. Intercept raw output → run the verification loop
+   6. Verification fails → log to ledger → raise rejection (HTTP 422)
+   7. Run guardrails → fail → raise rejection (HTTP 422)
+   8. Call pr_writer.create_docs_pr() → get the PR URL
+   9. Log the full run to the observability table
+  10. Return the metadata envelope with the PR URL
 
 Gemini is called ONLY here and in agent/verifier.py. The single model
 instance created in _get_llm() is shared by both the agentic loop and the
-self-critique call.
+self-critique call. GitHub is touched only via github_integration/.
 """
 
 import time
@@ -24,12 +25,18 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from agent.guardrails import build_envelope, enforce_guardrails
 from agent.guides import load_guide
 from agent.tools import TOOLS, RunContext, set_run_context
 from agent.verifier import verify_output
+from github_integration.fetcher import crawl_repo_tree, fetch_files
+from github_integration.pr_writer import create_docs_pr
+from harness.guardrails import build_envelope, enforce_guardrails
 from harness.ledger import log_mistake
 from harness.observability import log_run
+
+# Safety valve for auto_crawl on large repos: documenting an unbounded number
+# of files in one run would blow the context window and the GitHub rate limit.
+MAX_AUTO_CRAWL_FILES = 10
 
 
 class HarnessRejection(Exception):
@@ -62,26 +69,53 @@ def _as_text(output) -> str:
     return str(output)
 
 
-def run_harnessed_agent(request: str, file_path: str, function_name: str) -> dict:
+def run_harnessed_agent(
+    repo_full_name: str,
+    file_paths: list[str],
+    auto_crawl: bool = False,
+) -> dict:
     run_id = str(uuid.uuid4())
     started = time.perf_counter()
 
-    # HARNESS LAYER: Tool Orchestration — per-run audit context. Everything
-    # the tools do during this run is recorded here for later inspection.
+    # HARNESS LAYER: Tool Orchestration — run-scoped memory + audit context.
     ctx = RunContext(run_id=run_id)
     set_run_context(ctx)
 
     def _duration_ms() -> int:
         return int((time.perf_counter() - started) * 1000)
 
+    def _log(verification_passed: bool, confidence: float, failure_type: str | None, pr_url: str | None) -> None:
+        # HARNESS LAYER: Observability — every path through the harness logs.
+        log_run(
+            run_id=run_id,
+            repo_full_name=repo_full_name,
+            files_requested=file_paths,
+            files_fetched=sorted(ctx.fetched_files),
+            tools_called=ctx.tools_called,
+            verification_passed=verification_passed,
+            confidence_score=confidence,
+            failure_type=failure_type,
+            pr_url=pr_url,
+            duration_ms=_duration_ms(),
+        )
+
     # ------------------------------------------------------------------
-    # STEP 1 — HARNESS LAYER: Guide System
+    # STEP 1 — HARNESS LAYER: Guides
     # Load AGENTS.md with all learned corrections injected from the ledger.
     # ------------------------------------------------------------------
     guide = load_guide()
 
     # ------------------------------------------------------------------
-    # STEP 2 — Initialize the LangChain agent: tools + Gemini + AGENTS.md
+    # STEP 2 — GITHUB INTEGRATION: File Fetcher
+    # One fetch per run; the agent's tools work on these in-memory copies
+    # and never reach GitHub themselves.
+    # ------------------------------------------------------------------
+    if auto_crawl:
+        file_paths = crawl_repo_tree(repo_full_name)[:MAX_AUTO_CRAWL_FILES]
+    ctx.fetched_files = fetch_files(repo_full_name, file_paths)
+
+    # ------------------------------------------------------------------
+    # STEP 3 — Initialize the LangChain agent: tools + Gemini + AGENTS.md
     # as the system prompt. Braces are escaped so guide content is never
     # mistaken for template variables.
     # ------------------------------------------------------------------
@@ -95,67 +129,70 @@ def run_harnessed_agent(request: str, file_path: str, function_name: str) -> dic
         ]
     )
     agent = create_tool_calling_agent(llm, TOOLS, prompt)
-    executor = AgentExecutor(agent=agent, tools=TOOLS, max_iterations=10)
+    executor = AgentExecutor(agent=agent, tools=TOOLS, max_iterations=15)
 
     # ------------------------------------------------------------------
-    # STEP 3 — Run the agentic loop with the user request.
+    # STEP 4 — Run the agentic loop. The agent fetches snippets, checks
+    # existing docs, and stages sections via write_doc_section.
     # ------------------------------------------------------------------
+    file_list = "\n".join(f"- {p}" for p in ctx.fetched_files)
     task = (
-        f"Documentation request: {request}\n"
-        f"Target file: {file_path}\n"
-        f"Target function: {function_name}\n\n"
-        "Follow your guide. Fetch the real source code before writing anything, "
-        "check for existing docs, then produce the documentation section."
+        f"Generate API documentation for repository '{repo_full_name}'.\n"
+        f"The following files have been fetched and are available to your tools:\n"
+        f"{file_list}\n\n"
+        "Follow your guide. For each file: inspect its functions with "
+        "fetch_code_snippet, check search_existing_docs for overlap, then stage "
+        "one section per file with write_doc_section. Finish with a short "
+        "summary of what you documented."
     )
     result = executor.invoke({"input": task})
-    draft = _as_text(result.get("output", ""))
+    summary = _as_text(result.get("output", ""))
+
+    # Everything headed for the PR must be verified — the staged sections are
+    # the real deliverable, the summary is the cover letter.
+    draft = summary
+    if ctx.staged_docs:
+        draft = "\n\n".join([summary, *ctx.staged_docs.values()])
+    else:
+        # Agent answered inline without staging: the summary becomes the doc,
+        # so the PR is never empty.
+        ctx.staged_docs["generated_documentation"] = summary
 
     # ------------------------------------------------------------------
-    # STEP 4 — HARNESS LAYER: Verification Loop
-    # Intercept the raw output; it does NOT go to the user yet.
+    # STEP 5 — HARNESS LAYER: Verification Loop
+    # Intercept the raw output; nothing goes to GitHub or the user yet.
     # ------------------------------------------------------------------
-    verification = verify_output(llm, draft, ctx.fetched_snippets)
+    verification = verify_output(llm, draft, ctx.fetched_files)
 
     # ------------------------------------------------------------------
-    # STEP 5 — Verification failed → ledger + observability + 422.
+    # STEP 6 — Verification failed → ledger + observability + 422.
     # ------------------------------------------------------------------
     if not verification.passed:
         if verification.hallucinated_names:
             failure_type = "hallucination"
             description = (
-                f"Draft referenced names that do not exist in the codebase: "
-                f"{', '.join(verification.hallucinated_names)} (request: {request!r})"
+                f"Draft for {repo_full_name} referenced names that exist in none of the "
+                f"fetched files: {', '.join(verification.hallucinated_names)}"
             )
             correction = (
-                "Never mention functions or classes that were not returned by "
-                f"fetch_code_snippet. Nonexistent names used: {', '.join(verification.hallucinated_names)}. "
-                "Fetch and confirm every symbol before documenting it."
+                "Never mention functions or classes that do not appear in the fetched "
+                f"files. Nonexistent names used: {', '.join(verification.hallucinated_names)}. "
+                "Confirm every symbol with fetch_code_snippet before documenting it."
             )
         else:
             failure_type = "unverified_claim"
             description = (
-                f"Self-critique confidence {verification.confidence:.2f} was below the 0.75 "
-                f"threshold (request: {request!r}). Issues: {'; '.join(verification.issues) or 'none listed'}"
+                f"Self-critique confidence {verification.confidence:.2f} for {repo_full_name} "
+                f"was below the 0.75 threshold. Issues: {'; '.join(verification.issues) or 'none listed'}"
             )
             correction = (
-                "Only state facts directly supported by the fetched code snippet. "
-                "Do not infer behavior, defaults, or side effects the code does not show."
+                "Only state facts directly supported by the fetched code. Do not infer "
+                "behavior, defaults, or side effects the code does not show."
             )
 
         # HARNESS LAYER: Mistake Ledger — the failure becomes a lesson.
         log_mistake(failure_type, description, correction, run_id=run_id)
-
-        # HARNESS LAYER: Observability — failures are logged like any run.
-        log_run(
-            run_id=run_id,
-            input_request=request,
-            tools_called=ctx.tools_called,
-            verification_passed=False,
-            confidence_score=verification.confidence,
-            failure_type=failure_type,
-            final_output=draft,
-            duration_ms=_duration_ms(),
-        )
+        _log(False, verification.confidence, failure_type, pr_url=None)
 
         raise HarnessRejection(
             {
@@ -163,53 +200,49 @@ def run_harnessed_agent(request: str, file_path: str, function_name: str) -> dic
                 "failure_type": failure_type,
                 "hallucinated_names": verification.hallucinated_names,
                 "issues": verification.issues,
-                **build_envelope(ctx, verification, output=None),
+                **build_envelope(
+                    run_id, [c["tool"] for c in ctx.tools_called], verification, pr_url=None, output=None
+                ),
             }
         )
 
     # ------------------------------------------------------------------
-    # STEP 6 — HARNESS LAYER: Guardrails
+    # STEP 7 — HARNESS LAYER: Guardrails
     # ------------------------------------------------------------------
-    guardrails = enforce_guardrails(draft, ctx, verification)
-
-    # ------------------------------------------------------------------
-    # STEP 7 — Guardrails failed → observability + 422.
-    # ------------------------------------------------------------------
+    guardrails = enforce_guardrails(draft, ctx.fetched_files, verification)
     if not guardrails.passed:
-        log_run(
-            run_id=run_id,
-            input_request=request,
-            tools_called=ctx.tools_called,
-            verification_passed=True,
-            confidence_score=verification.confidence,
-            failure_type="wrong_format",
-            final_output=draft,
-            duration_ms=_duration_ms(),
-        )
+        _log(True, verification.confidence, "wrong_format", pr_url=None)
         raise HarnessRejection(
             {
                 "reason": "guardrails_failed",
                 "failure_type": "wrong_format",
                 "violations": guardrails.violations,
-                **build_envelope(ctx, verification, output=None),
+                **build_envelope(
+                    run_id, [c["tool"] for c in ctx.tools_called], verification, pr_url=None, output=None
+                ),
             }
         )
 
     # ------------------------------------------------------------------
-    # STEP 8 — HARNESS LAYER: Observability — record the successful run.
+    # STEP 8 — GITHUB INTEGRATION: PR Writer
+    # Only verified, guardrail-clean sections ever reach a pull request.
     # ------------------------------------------------------------------
-    log_run(
-        run_id=run_id,
-        input_request=request,
-        tools_called=ctx.tools_called,
-        verification_passed=True,
-        confidence_score=verification.confidence,
-        failure_type=None,
-        final_output=draft,
-        duration_ms=_duration_ms(),
+    pr_url = create_docs_pr(
+        repo_full_name,
+        ctx.staged_docs,
+        run_id,
+        confidence=verification.confidence,
+        files_documented=sorted(ctx.fetched_files),
     )
 
     # ------------------------------------------------------------------
-    # STEP 9 — Return verified output inside the metadata envelope.
+    # STEP 9 — HARNESS LAYER: Observability — record the successful run.
     # ------------------------------------------------------------------
-    return build_envelope(ctx, verification, output=draft)
+    _log(True, verification.confidence, None, pr_url=pr_url)
+
+    # ------------------------------------------------------------------
+    # STEP 10 — Return the metadata envelope with the PR URL.
+    # ------------------------------------------------------------------
+    return build_envelope(
+        run_id, [c["tool"] for c in ctx.tools_called], verification, pr_url=pr_url, output=summary
+    )

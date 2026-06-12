@@ -1,8 +1,8 @@
-"""DocAgent Harness — FastAPI entrypoint.
+"""DocAgent Harness (GitHub Edition) — FastAPI entrypoint.
 
-The API surface of the harness. Endpoints never touch the model directly;
-they go through the runner (which owns the full harness flow) or read the
-harness's own stores (ledger, observability).
+The API surface of the harness. Endpoints never touch the model or GitHub
+directly; they go through the runner (which owns the full harness flow) or
+read the harness's own stores (ledger, observability).
 """
 
 import logging
@@ -15,25 +15,26 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from agent.runner import HarnessRejection, run_harnessed_agent
-from harness.ledger import VALID_FAILURE_TYPES, get_all_entries, log_mistake
+from github_integration.client import GitHubIntegrationError
+from harness.ledger import VALID_FAILURE_TYPES, get_all_entries, log_mistake, mark_injected
 from harness.observability import get_recent_runs
 from harness.patcher import patch_agents_md
-from harness.ledger import mark_injected
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 app = FastAPI(
-    title="DocAgent Harness",
+    title="DocAgent Harness (GitHub Edition)",
     description="A documentation agent wrapped in a full outer harness: "
-    "guide system, mistake ledger, verification loop, guardrails, observability.",
-    version="1.0.0",
+    "guide system, mistake ledger, verification loop, guardrails, "
+    "observability — publishing verified docs as GitHub pull requests.",
+    version="2.0.0",
 )
 
 
 class GenerateDocsRequest(BaseModel):
-    request: str = Field(..., description="What documentation to produce")
-    file_path: str = Field(..., description="Source file, e.g. 'payments.py'")
-    function_name: str = Field(..., description="Function to document, e.g. 'process_payment'")
+    repo_full_name: str = Field(..., description="GitHub repo, e.g. 'owner/repo-name'")
+    file_paths: list[str] = Field(default_factory=list, description="Files to document")
+    auto_crawl: bool = Field(False, description="Ignore file_paths and crawl the repo tree")
 
 
 class CorrectionRequest(BaseModel):
@@ -45,13 +46,19 @@ class CorrectionRequest(BaseModel):
 
 @app.post("/generate-docs")
 def generate_docs(body: GenerateDocsRequest):
-    """Run the fully harnessed agent and return verified documentation."""
+    """Run the fully harnessed agent; returns the metadata envelope with the
+    docs PR URL on success."""
+    if not body.auto_crawl and not body.file_paths:
+        raise HTTPException(status_code=422, detail="Provide file_paths or set auto_crawl=true.")
+
     try:
-        return run_harnessed_agent(body.request, body.file_path, body.function_name)
+        return run_harnessed_agent(body.repo_full_name, body.file_paths, body.auto_crawl)
     except HarnessRejection as rejection:
         # HARNESS LAYER: Guardrails — blocked output never reaches the user
         # as a success; the caller gets a structured explanation instead.
         raise HTTPException(status_code=422, detail=rejection.detail)
+    except GitHubIntegrationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
 @app.get("/runs")
@@ -85,8 +92,8 @@ def ledger_correct(body: CorrectionRequest):
         run_id=body.run_id,
     )
 
-    # HARNESS LAYER: Guide System — patch AGENTS.md right away so the very
-    # next run already benefits from the correction.
+    # HARNESS LAYER: Guides — patch AGENTS.md right away so the very next
+    # run already benefits from the correction.
     injected = patch_agents_md([entry])
     if entry.get("id") is not None:
         mark_injected([entry["id"]])

@@ -1,6 +1,6 @@
 """Loads the agent guide (AGENTS.md) and injects learned corrections.
 
-# HARNESS LAYER: Guide System
+# HARNESS LAYER: Guides
 AGENTS.md is the agent's contract: what it may do, what it must never do, and
 — crucially — every correction the harness has learned from past failures.
 This module guarantees the agent never starts a run with a stale guide.

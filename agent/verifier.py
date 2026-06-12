@@ -2,39 +2,42 @@
 
 # HARNESS LAYER: Verification Loop
 The model's draft is never trusted. Two independent checks run on every draft:
-  1. A deterministic hallucination check against the real codebase (no model).
+  1. A deterministic hallucination check against the files actually fetched
+     from GitHub this run (no model involved).
   2. A self-critique call to Gemini that scores confidence and lists issues.
 
 NOTE: This module never constructs a Gemini client. The runner owns the model
 instance and passes it in, so all API access stays in runner.py/verifier.py.
+It also never touches GitHub — it only sees the in-memory fetched contents.
 """
 
-import ast
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 
-SAMPLE_CODEBASE_DIR = Path(__file__).resolve().parent.parent / "sample_codebase"
-
 CONFIDENCE_THRESHOLD = 0.75
+
+# Cap how much fetched code goes into the critique prompt; enough to ground
+# the review without blowing the context on large auto-crawled repos.
+MAX_CRITIQUE_CODE_CHARS = 24_000
 
 SELF_CRITIQUE_PROMPT = (
     "Review this documentation draft. Identify any claims that cannot be "
-    "verified from the provided code snippet. Return JSON only, no markdown: "
+    "verified from the provided code. Return JSON only, no markdown: "
     '{confidence: float, issues: list[str]}'
 )
 
-# Common identifiers that are *not* hallucinations even though they don't
-# exist in the sample codebase (builtins, stdlib, typing, doc boilerplate).
+# Common identifiers that are *not* hallucinations even though they may not
+# appear in the fetched files (builtins, stdlib, typing, doc boilerplate).
 _KNOWN_SAFE_NAMES = {
     "print", "len", "str", "int", "float", "bool", "dict", "list", "set",
     "tuple", "range", "type", "isinstance", "enumerate", "zip", "sorted",
     "open", "repr", "hash", "format", "datetime", "timedelta", "uuid",
-    "uuid4", "optional", "list", "dict", "any", "union", "valueerror",
-    "typeerror", "keyerror", "exception", "runtimeerror", "none",
+    "uuid4", "optional", "any", "union", "valueerror", "typeerror",
+    "keyerror", "exception", "runtimeerror", "permissionerror", "none",
+    "true", "false", "null", "undefined", "console", "promise", "json",
     "raises", "returns", "args", "kwargs", "self", "init", "main",
 }
 
@@ -50,26 +53,13 @@ class VerificationResult:
 # ---------------------------------------------------------------------------
 # HARNESS LAYER: Verification Loop — Step 1: deterministic hallucination check
 # ---------------------------------------------------------------------------
-def _real_codebase_names() -> set[str]:
-    """Collect every function/class name actually defined in sample_codebase/."""
-    names: set[str] = set()
-    for path in SAMPLE_CODEBASE_DIR.glob("*.py"):
-        try:
-            tree = ast.parse(path.read_text())
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                names.add(node.name)
-    return names
-
-
 def _extract_mentioned_names(text: str) -> set[str]:
     """Pull function/class-looking identifiers out of the draft.
 
-    Heuristic: identifiers that are called like `name(...)` or wrapped in
-    backticks, and that look like codebase symbols (snake_case with an
-    underscore, or CamelCase). Plain English words are ignored.
+    Heuristic: identifiers that are called like `name(...)`, wrapped in
+    backticks, or bare CamelCase class references — and that look like code
+    symbols (snake_case with an underscore, or CamelCase). Plain English
+    words are ignored.
     """
     candidates: set[str] = set()
     candidates.update(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", text))
@@ -88,11 +78,17 @@ def _extract_mentioned_names(text: str) -> set[str]:
     return {n for n in candidates if looks_like_symbol(n)}
 
 
-def check_hallucinated_names(draft: str) -> list[str]:
-    """Return names mentioned in the draft that do not exist in the codebase."""
-    real = _real_codebase_names()
+def check_hallucinated_names(draft: str, fetched_files: dict[str, str]) -> list[str]:
+    """Return symbols mentioned in the draft that appear in none of the
+    fetched files. A word-boundary search over real file contents works
+    uniformly across Python, TypeScript, and JavaScript."""
     mentioned = _extract_mentioned_names(draft)
-    return sorted(mentioned - real)
+    hallucinated = []
+    for name in mentioned:
+        pattern = re.compile(rf"\b{re.escape(name)}\b")
+        if not any(pattern.search(content) for content in fetched_files.values()):
+            hallucinated.append(name)
+    return sorted(hallucinated)
 
 
 # ---------------------------------------------------------------------------
@@ -116,13 +112,23 @@ def _parse_critique_json(raw: str) -> tuple[float, list[str]]:
         return 0.0, [f"Self-critique response was not valid JSON: {raw[:200]}"]
 
 
-def run_self_critique(llm, draft: str, fetched_snippets: list[str]) -> tuple[float, list[str]]:
-    """Second Gemini call: ask the model to audit its own draft against the
-    code snippets it actually fetched."""
-    snippets = "\n\n".join(fetched_snippets) if fetched_snippets else "(no snippets were fetched)"
+def run_self_critique(llm, draft: str, fetched_files: dict[str, str]) -> tuple[float, list[str]]:
+    """Second Gemini call: ask the model to audit the draft against the
+    actual code fetched from the repository."""
+    chunks: list[str] = []
+    budget = MAX_CRITIQUE_CODE_CHARS
+    for path, content in fetched_files.items():
+        portion = content[: max(budget, 0)]
+        chunks.append(f"### {path}\n{portion}")
+        budget -= len(portion)
+        if budget <= 0:
+            chunks.append("(remaining files truncated)")
+            break
+    code = "\n\n".join(chunks) if chunks else "(no files were fetched)"
+
     message = (
         f"{SELF_CRITIQUE_PROMPT}\n\n"
-        f"--- CODE SNIPPET ---\n{snippets}\n\n"
+        f"--- FETCHED CODE ---\n{code}\n\n"
         f"--- DOCUMENTATION DRAFT ---\n{draft}"
     )
     response = llm.invoke([HumanMessage(content=message)])
@@ -133,14 +139,14 @@ def run_self_critique(llm, draft: str, fetched_snippets: list[str]) -> tuple[flo
 # ---------------------------------------------------------------------------
 # HARNESS LAYER: Verification Loop — combined verdict
 # ---------------------------------------------------------------------------
-def verify_output(llm, draft: str, fetched_snippets: list[str]) -> VerificationResult:
+def verify_output(llm, draft: str, fetched_files: dict[str, str]) -> VerificationResult:
     """Run both verification steps and return a single verdict.
 
     Rejects when hallucinated names are found OR self-critique confidence
     is below the threshold (0.75).
     """
-    hallucinated = check_hallucinated_names(draft)
-    confidence, issues = run_self_critique(llm, draft, fetched_snippets)
+    hallucinated = check_hallucinated_names(draft, fetched_files)
+    confidence, issues = run_self_critique(llm, draft, fetched_files)
 
     passed = not hallucinated and confidence >= CONFIDENCE_THRESHOLD
     return VerificationResult(

@@ -1,19 +1,18 @@
-"""Final output validation before anything reaches the API response.
+"""Final output validation before anything leaves the system.
 
 # HARNESS LAYER: Guardrails
 Guardrails are the last gate. Even a verified draft is blocked if:
-  - it contains code blocks that cannot be traced back to a real
-    fetch_code_snippet call (fabricated examples), or
-  - the verification step was skipped entirely.
+  - the verification step was skipped entirely, or
+  - it contains code examples that cannot be traced back to the files
+    actually fetched from GitHub this run.
 
-This module is pure validation logic — it never calls a model.
+Pure validation logic, deliberately decoupled: it imports nothing from the
+model stack or GitHub integration. It receives plain strings/dicts and an
+object with .passed/.confidence (the verifier's verdict) and judges them.
 """
 
 import re
 from dataclasses import dataclass, field
-
-from agent.tools import RunContext
-from agent.verifier import VerificationResult
 
 
 @dataclass
@@ -27,19 +26,19 @@ def _extract_code_blocks(text: str) -> list[str]:
     return [m.group(1) for m in re.finditer(r"```[a-zA-Z0-9_-]*\n(.*?)```", text, re.DOTALL)]
 
 
-def _block_is_derived_from_snippets(block: str, fetched_snippets: list[str]) -> bool:
+def _block_is_derived_from_files(block: str, fetched_files: dict[str, str]) -> bool:
     """A code block is legitimate if every non-trivial line in it appears in a
-    snippet the agent actually fetched. Comparing stripped lines tolerates
+    file fetched from the repo. Comparing stripped lines tolerates
     re-indentation while still catching invented code."""
-    snippet_lines = set()
-    for snippet in fetched_snippets:
-        snippet_lines.update(line.strip() for line in snippet.splitlines() if line.strip())
+    file_lines: set[str] = set()
+    for content in fetched_files.values():
+        file_lines.update(line.strip() for line in content.splitlines() if line.strip())
 
     for line in block.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if not stripped or stripped.startswith(("#", "//")):
             continue
-        if stripped not in snippet_lines:
+        if stripped not in file_lines:
             return False
     return True
 
@@ -47,31 +46,27 @@ def _block_is_derived_from_snippets(block: str, fetched_snippets: list[str]) -> 
 # ---------------------------------------------------------------------------
 # HARNESS LAYER: Guardrails — main gate
 # ---------------------------------------------------------------------------
-def enforce_guardrails(
-    draft: str,
-    ctx: RunContext,
-    verification: VerificationResult | None,
-) -> GuardrailResult:
+def enforce_guardrails(draft: str, fetched_files: dict[str, str], verification) -> GuardrailResult:
     violations: list[str] = []
 
-    # Gate 1: verification must have actually run. A missing result means a
+    # Gate 1: verification must have actually run. A missing verdict means a
     # code path skipped the verifier — fail closed.
     if verification is None:
         violations.append("Verification step was skipped; output cannot be released.")
 
-    # Gate 2: every code block must be derived from a real fetched snippet.
+    # Gate 2: every code example must be derived from a fetched file.
     code_blocks = _extract_code_blocks(draft)
-    if code_blocks and not ctx.fetched_snippets:
+    if code_blocks and not fetched_files:
         violations.append(
-            "Output contains code blocks but fetch_code_snippet was never called — "
+            "Output contains code blocks but no files were fetched from the repo — "
             "code examples are fabricated."
         )
     else:
         for i, block in enumerate(code_blocks):
-            if not _block_is_derived_from_snippets(block, ctx.fetched_snippets):
+            if not _block_is_derived_from_files(block, fetched_files):
                 violations.append(
                     f"Code block #{i + 1} contains lines that do not appear in any "
-                    "fetched snippet — possible fabricated example."
+                    "fetched file — possible fabricated example."
                 )
 
     return GuardrailResult(passed=not violations, violations=violations)
@@ -83,14 +78,17 @@ def enforce_guardrails(
 # always tell whether output was verified and how it was produced.
 # ---------------------------------------------------------------------------
 def build_envelope(
-    ctx: RunContext,
-    verification: VerificationResult | None,
+    run_id: str,
+    tools_used: list[str],
+    verification,
+    pr_url: str | None,
     output: str | None,
 ) -> dict:
     return {
         "verified": bool(verification and verification.passed),
         "confidence": verification.confidence if verification else 0.0,
-        "tools_used": [call["tool"] for call in ctx.tools_called],
-        "run_id": ctx.run_id,
+        "tools_used": tools_used,
+        "run_id": run_id,
+        "pr_url": pr_url,
         "output": output,
     }

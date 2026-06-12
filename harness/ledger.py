@@ -6,7 +6,7 @@ agent should learn. On the next run, uninjected corrections are appended to
 AGENTS.md (see harness/patcher.py) so the agent does not repeat the mistake.
 
 This module talks only to Supabase. It is completely decoupled from model
-calls — it never imports anything from the agent's LLM stack.
+and GitHub calls — it never imports anything from the LLM stack or PyGithub.
 """
 
 import os
@@ -32,16 +32,19 @@ def log_mistake(
     correction: str,
     run_id: str | None = None,
 ) -> dict:
-    """Record a failure + correction. Raises on invalid failure_type so bad
-    data never enters the ledger."""
+    """Record a failure + correction. The originating run is folded into the
+    description (the ledger schema is intentionally minimal). Raises on
+    invalid failure_type so bad data never enters the ledger."""
     if failure_type not in VALID_FAILURE_TYPES:
         raise ValueError(f"failure_type must be one of {sorted(VALID_FAILURE_TYPES)}, got '{failure_type}'")
+
+    if run_id:
+        description = f"[run {run_id}] {description}"
 
     row = {
         "failure_type": failure_type,
         "description": description,
         "correction": correction,
-        "run_id": run_id,
         "injected_into_agents_md": False,
     }
     result = _client().table(TABLE).insert(row).execute()

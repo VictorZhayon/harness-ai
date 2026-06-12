@@ -1,37 +1,38 @@
 """LangChain tools available to the DocAgent.
 
 # HARNESS LAYER: Tool Orchestration
-Every capability the model has is mediated by a tool defined here. The tools
-also record what they did into a per-run context so the verification and
-guardrail layers can audit the run afterwards.
+Every capability the model has is mediated by a tool defined here. Tools
+operate on the run-scoped memory (files already fetched from GitHub in step 2
+of the harness flow) — the agent itself can never reach GitHub directly. The
+tools also record an audit trail so verification and guardrails can inspect
+exactly what the agent saw and did.
 """
 
 import ast
+import re
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 from langchain_core.tools import tool
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SAMPLE_CODEBASE_DIR = PROJECT_ROOT / "sample_codebase"
-DOCS_DIR = PROJECT_ROOT / "docs"
-OUTPUT_DIR = DOCS_DIR / "output"
+GENERATED_DOCS_DIR = PROJECT_ROOT / "docs" / "generated"
 
 
 # ---------------------------------------------------------------------------
-# HARNESS LAYER: Tool Orchestration — per-run audit context
-# The harness needs to know exactly which tools ran and which code snippets
-# were actually fetched, so guardrails can reject fabricated code examples.
-# A ContextVar keeps this safe under concurrent FastAPI requests.
+# HARNESS LAYER: Tool Orchestration — run-scoped memory + audit context
+# fetched_files holds the GitHub file contents for this run; staged_docs
+# accumulates the sections the agent writes, to be handed to the PR writer
+# only after verification and guardrails pass. A ContextVar keeps this safe
+# under concurrent FastAPI requests.
 # ---------------------------------------------------------------------------
 @dataclass
 class RunContext:
     run_id: str
+    fetched_files: dict[str, str] = field(default_factory=dict)
+    staged_docs: dict[str, str] = field(default_factory=dict)
     tools_called: list[dict] = field(default_factory=list)
-    fetched_snippets: list[str] = field(default_factory=list)
-    wrote_files: list[str] = field(default_factory=list)
 
 
 _run_context: ContextVar[RunContext | None] = ContextVar("docagent_run_context", default=None)
@@ -51,49 +52,91 @@ def _record_tool_call(tool_name: str, args: dict) -> None:
         ctx.tools_called.append({"tool": tool_name, "args": args})
 
 
+def _resolve_file(ctx: RunContext, file_path: str) -> tuple[str, str] | None:
+    """Find a fetched file by exact path, then by suffix/basename so the
+    agent can say 'payments.py' for 'src/payments.py'."""
+    if file_path in ctx.fetched_files:
+        return file_path, ctx.fetched_files[file_path]
+    matches = [p for p in ctx.fetched_files if p.endswith("/" + file_path) or Path(p).name == file_path]
+    if len(matches) == 1:
+        return matches[0], ctx.fetched_files[matches[0]]
+    return None
+
+
+def _extract_python(source: str, function_name: str) -> str | None:
+    """Extract a function/class from Python source via AST."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == function_name:
+            return ast.get_source_segment(source, node)
+    return None
+
+
+def _extract_js_like(source: str, function_name: str) -> str | None:
+    """Extract a function/class from JS/TS source via declaration match +
+    brace counting. Naive, but good enough to ground documentation."""
+    name = re.escape(function_name)
+    pattern = re.compile(
+        rf"^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?"
+        rf"(?:function\s+{name}\s*\(|class\s+{name}\b|(?:const|let|var)\s+{name}\s*=)",
+        re.MULTILINE,
+    )
+    match = pattern.search(source)
+    if not match:
+        return None
+    brace = source.find("{", match.start())
+    if brace == -1:
+        return source[match.start():].split("\n", 1)[0]
+    depth = 0
+    for i in range(brace, len(source)):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[match.start(): i + 1]
+    return source[match.start(): match.start() + 2000]
+
+
 # ---------------------------------------------------------------------------
-# Tool 1: fetch_code_snippet
+# Tool 1: fetch_code_snippet — reads from run memory, never from GitHub
 # ---------------------------------------------------------------------------
 @tool
 def fetch_code_snippet(file_path: str, function_name: str) -> str:
-    """Fetch the exact source code of a function from the codebase.
+    """Get the exact source code of a function or class from a fetched file.
 
     Args:
-        file_path: Path of the source file relative to the codebase root,
-            e.g. "payments.py" or "sample_codebase/payments.py".
-        function_name: Name of the function (or class) to extract.
+        file_path: Path of the file as fetched from the repo, e.g.
+            "src/payments.py".
+        function_name: Name of the function or class to extract.
 
-    Returns the verbatim source code including the docstring, or an error
-    message if the file/function does not exist.
+    Returns the verbatim source code, or an error listing what is available.
     """
     _record_tool_call("fetch_code_snippet", {"file_path": file_path, "function_name": function_name})
 
-    # Normalize: accept "payments.py" or "sample_codebase/payments.py".
-    rel = Path(file_path).name
-    target = (SAMPLE_CODEBASE_DIR / rel).resolve()
-    if not str(target).startswith(str(SAMPLE_CODEBASE_DIR.resolve())) or not target.exists():
-        available = sorted(p.name for p in SAMPLE_CODEBASE_DIR.glob("*.py"))
-        return f"ERROR: file '{file_path}' not found. Available files: {available}"
+    ctx = get_run_context()
+    if ctx is None or not ctx.fetched_files:
+        return "ERROR: no files have been fetched for this run."
 
-    source = target.read_text()
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as exc:
-        return f"ERROR: could not parse '{rel}': {exc}"
+    resolved = _resolve_file(ctx, file_path)
+    if resolved is None:
+        return f"ERROR: '{file_path}' was not fetched. Fetched files: {sorted(ctx.fetched_files)}"
+    real_path, source = resolved
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == function_name:
-            snippet = ast.get_source_segment(source, node) or ""
-            # HARNESS LAYER: Guardrails (provenance) — remember every snippet
-            # the model legitimately saw, so any code example in the final
-            # output can be traced back to a real fetch.
-            ctx = get_run_context()
-            if ctx is not None:
-                ctx.fetched_snippets.append(snippet)
-            return f"# Source: {rel} :: {function_name}\n{snippet}"
+    if real_path.endswith(".py"):
+        snippet = _extract_python(source, function_name)
+    else:
+        snippet = _extract_js_like(source, function_name)
 
-    names = [n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
-    return f"ERROR: '{function_name}' not found in '{rel}'. Defined names: {names}"
+    if snippet is None:
+        return (
+            f"ERROR: '{function_name}' not found in '{real_path}'. "
+            "Use exact names as they appear in the file."
+        )
+    return f"# Source: {real_path} :: {function_name}\n{snippet}"
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +144,7 @@ def fetch_code_snippet(file_path: str, function_name: str) -> str:
 # ---------------------------------------------------------------------------
 @tool
 def search_existing_docs(query: str) -> str:
-    """Search existing documentation for relevant sections by keyword.
+    """Search previously generated documentation for relevant sections.
 
     Args:
         query: Free-text query, e.g. "payment refunds".
@@ -115,8 +158,9 @@ def search_existing_docs(query: str) -> str:
     if not keywords:
         return "ERROR: query too short to search."
 
+    GENERATED_DOCS_DIR.mkdir(parents=True, exist_ok=True)
     scored: list[tuple[int, Path, str]] = []
-    for doc in sorted(DOCS_DIR.glob("*.md")):
+    for doc in sorted(GENERATED_DOCS_DIR.glob("*.md")):
         text = doc.read_text()
         lower = text.lower()
         score = sum(lower.count(kw) for kw in keywords)
@@ -129,36 +173,32 @@ def search_existing_docs(query: str) -> str:
     scored.sort(key=lambda item: item[0], reverse=True)
     results = []
     for score, doc, text in scored[:3]:
-        excerpt = text.strip()[:400]
-        results.append(f"--- {doc.name} (score={score}) ---\n{excerpt}")
+        results.append(f"--- {doc.name} (score={score}) ---\n{text.strip()[:400]}")
     return "\n\n".join(results)
 
 
 # ---------------------------------------------------------------------------
-# Tool 3: write_doc_section
+# Tool 3: write_doc_section — stages in memory; the PR writer publishes it
+# only after the harness has verified the whole run.
 # ---------------------------------------------------------------------------
 @tool
 def write_doc_section(section_name: str, content: str) -> str:
-    """Persist a finished documentation section to the docs output folder.
+    """Stage a finished documentation section for the docs pull request.
 
     Args:
         section_name: Short slug for the section, e.g. "process_payment".
         content: The full markdown content of the section.
 
-    Returns the path the section was written to.
+    Returns a confirmation. Sections are committed to GitHub only after the
+    run passes verification.
     """
     _record_tool_call("write_doc_section", {"section_name": section_name})
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in section_name) or "section"
-    path = OUTPUT_DIR / f"{slug}_{timestamp}.md"
-    path.write_text(content)
-
     ctx = get_run_context()
-    if ctx is not None:
-        ctx.wrote_files.append(str(path))
-    return f"Wrote section to {path}"
+    if ctx is None:
+        return "ERROR: no active run."
+    ctx.staged_docs[section_name] = content
+    return f"Staged section '{section_name}' ({len(content)} chars) for the docs PR."
 
 
 TOOLS = [fetch_code_snippet, search_existing_docs, write_doc_section]

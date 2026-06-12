@@ -6,7 +6,8 @@ Every agent run — success or failure — is recorded twice:
   2. A row in the Supabase `agent_runs` table (for the /runs endpoint).
 
 Telemetry must never break a run: Supabase write failures are logged and
-swallowed. Like the ledger, this module is fully decoupled from model calls.
+swallowed. Like the ledger, this module is fully decoupled from model and
+GitHub calls.
 """
 
 import json
@@ -31,23 +32,27 @@ def _client() -> Client:
 
 def log_run(
     run_id: str,
-    input_request: str,
+    repo_full_name: str,
+    files_requested: list[str],
+    files_fetched: list[str],
     tools_called: list[dict],
     verification_passed: bool,
     confidence_score: float,
     failure_type: str | None,
-    final_output: str | None,
+    pr_url: str | None,
     duration_ms: int,
 ) -> None:
     record = {
         "run_id": run_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "input_request": input_request,
+        "repo_full_name": repo_full_name,
+        "files_requested": files_requested,
+        "files_fetched": files_fetched,
         "tools_called": tools_called,
         "verification_passed": verification_passed,
         "confidence_score": confidence_score,
         "failure_type": failure_type,
-        "final_output": final_output,
+        "pr_url": pr_url,
         "duration_ms": duration_ms,
     }
 

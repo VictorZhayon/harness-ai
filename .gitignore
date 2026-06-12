@@ -2,4 +2,4 @@
 __pycache__/
 *.pyc
 .env
-docs/output/*.md
+docs/generated/*.md

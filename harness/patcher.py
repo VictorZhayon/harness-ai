@@ -5,8 +5,8 @@ The patcher closes the loop: failures recorded in the mistake ledger become
 permanent instructions in the agent's guide. The agent literally cannot start
 a run without reading its own accumulated corrections.
 
-Pure file manipulation — no model calls, no Supabase calls. The ledger decides
-*what* to inject; the patcher only knows *how*.
+Pure file manipulation — no model calls, no GitHub calls, no Supabase calls.
+The ledger decides *what* to inject; the patcher only knows *how*.
 """
 
 from pathlib import Path
