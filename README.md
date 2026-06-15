@@ -8,7 +8,7 @@ claim, and opens a pull request with the result.
 ## What is Harness Engineering?
 
 An AI agent is not just a model: **Agent = Model + Harness**. The model
-(here, a frozen `gemini-2.0-flash`) provides raw capability, while the
+(here, a frozen `gemini-2.5-flash`) provides raw capability, while the
 harness provides everything that makes it dependable — constraints, tools,
 verification, guardrails, and a memory of past mistakes. Because the model is
 frozen, all improvement happens in the harness: when the agent fails, the
@@ -233,7 +233,7 @@ docagent-harness/
 ## Design Constraints
 
 - Gemini is called **only** in `agent/runner.py` and `agent/verifier.py`,
-  through one shared `ChatGoogleGenerativeAI(model="gemini-2.0-flash")`
+  through one shared `ChatGoogleGenerativeAI(model="gemini-2.5-flash")`
   instance.
 - GitHub is called **only** inside `github_integration/`.
 - The harness modules (`ledger`, `observability`, `guardrails`, `patcher`)

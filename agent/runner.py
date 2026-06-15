@@ -51,7 +51,7 @@ class HarnessRejection(Exception):
 def _get_llm() -> ChatGoogleGenerativeAI:
     # The frozen model. One instance serves both the agentic loop here and
     # the self-critique call in verifier.py.
-    return ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.1)
+    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
 
 
 def _as_text(output) -> str:
