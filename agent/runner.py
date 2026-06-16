@@ -23,7 +23,7 @@ from functools import lru_cache
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, HarmBlockThreshold, HarmCategory
 
 from agent.guides import load_guide
 from agent.tools import TOOLS, RunContext, set_run_context
@@ -51,7 +51,16 @@ class HarnessRejection(Exception):
 def _get_llm() -> ChatGoogleGenerativeAI:
     # The frozen model. One instance serves both the agentic loop here and
     # the self-critique call in verifier.py.
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        temperature=0.1,
+        safety_settings={
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        },
+    )
 
 
 def _as_text(output) -> str:
@@ -114,6 +123,10 @@ def run_harnessed_agent(
         file_paths = crawl_repo_tree(repo_full_name)[:MAX_AUTO_CRAWL_FILES]
     ctx.fetched_files = fetch_files(repo_full_name, file_paths)
 
+    total_chars = sum(len(v) for v in ctx.fetched_files.values())
+    if total_chars > 50000:
+        print(f"Warning: large context ({total_chars} chars). Gemini may drop response.")
+
     # ------------------------------------------------------------------
     # STEP 3 — Initialize the LangChain agent: tools + Gemini + AGENTS.md
     # as the system prompt. Braces are escaped so guide content is never
@@ -145,7 +158,14 @@ def run_harnessed_agent(
         "one section per file with write_doc_section. Finish with a short "
         "summary of what you documented."
     )
-    result = executor.invoke({"input": task})
+    try:
+        result = executor.invoke({"input": task})
+    except ValueError as e:
+        if "No generation chunks" in str(e):
+            time.sleep(3)
+            result = executor.invoke({"input": task})
+        else:
+            raise
     summary = _as_text(result.get("output", ""))
 
     # Everything headed for the PR must be verified — the staged sections are
