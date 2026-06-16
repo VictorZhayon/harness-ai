@@ -74,6 +74,28 @@ Unverified documentation can never reach a pull request: the PR writer runs
    uvicorn main:app --reload
    ```
 
+   Then open **http://localhost:8000** for the web UI, or use the API directly
+   (see below).
+
+## Web UI
+
+The dashboard at `http://localhost:8000` exposes all four operations without
+needing curl:
+
+**Generate** — enter a repo, list file paths (one per line), and optionally
+enable Auto Crawl. The agent runs synchronously; on completion you see
+confidence score, verified status, tools used, and a direct link to the opened
+PR. Harness rejections (hallucination caught, guardrail violation, etc.) are
+displayed as structured error panels rather than raw HTTP errors.
+
+**Recent Runs** — table of the last 20 executions from the observability log,
+with confidence badges, pass/fail status, and PR links.
+
+**Ledger** — table of all recorded mistakes and their corrections, including
+whether each has been patched into `AGENTS.md`. Includes a form to submit a
+correction manually: it calls `POST /ledger/correct` and patches `AGENTS.md`
+immediately so the very next run benefits.
+
 ## API
 
 ### POST /generate-docs — full harnessed run, ends in a PR
@@ -124,7 +146,7 @@ curl -X POST http://localhost:8000/ledger/correct \
   -H "Content-Type: application/json" \
   -d '{
     "run_id": "7f3c9a1e-...",
-    "failure_type": "incomplete",
+    "failure_type": "hallucination",
     "description": "Doc omitted the idempotency_key parameter",
     "correction": "Always document every parameter shown in the fetched signature, including optional ones."
   }'
@@ -155,7 +177,7 @@ returns `422`:
 ```
 
 **2. The failure becomes a ledger entry** (written automatically, alongside
-any corrections a human submits via `POST /ledger/correct`):
+any corrections a human submits via `POST /ledger/correct` or the web UI):
 
 | failure_type | correction | injected_into_agents_md |
 |---|---|---|
@@ -205,13 +227,16 @@ What happens:
    **"docs: AI-generated documentation [<id>]"** — the PR body lists the
    files documented, the confidence score, and the run ID for the
    observability log.
-5. The response gives you the `pr_url`; review and merge like any PR.
+5. The response (or the web UI) gives you the `pr_url`; review and merge like
+   any PR.
 
 ## Project Layout
 
 ```
 docagent-harness/
-├── main.py                  # FastAPI entrypoint
+├── main.py                  # FastAPI entrypoint + web UI route
+├── static/
+│   └── index.html           # Single-page dashboard (Generate, Runs, Ledger)
 ├── agent/
 │   ├── runner.py            # Agentic loop orchestrator (10-step harness flow)
 │   ├── guides.py            # Loads AGENTS.md + injects mistake ledger
