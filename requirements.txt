@@ -7,3 +7,4 @@ PyGithub>=2.3
 supabase>=2.4
 python-dotenv>=1.0
 pydantic>=2.6
+aiofiles>=23.0

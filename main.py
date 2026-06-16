@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 load_dotenv()  # must run before any module reads env vars
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent.runner import HarnessRejection, run_harnessed_agent
@@ -29,6 +31,13 @@ app = FastAPI(
     "observability — publishing verified docs as GitHub pull requests.",
     version="2.0.0",
 )
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse("static/index.html")
 
 
 class GenerateDocsRequest(BaseModel):

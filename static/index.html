@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DocAgent Harness</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3250;
+      --accent: #6c7aff;
+      --accent-dim: #3d4680;
+      --text: #e2e4f0;
+      --muted: #7b80a0;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --radius: 8px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      height: 56px;
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    header .badge {
+      font-size: 11px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-weight: 500;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      min-height: calc(100vh - 56px);
+    }
+
+    nav {
+      border-right: 1px solid var(--border);
+      padding: 24px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    nav button {
+      background: none;
+      border: none;
+      color: var(--muted);
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    nav button:hover { background: var(--surface); color: var(--text); }
+    nav button.active { background: var(--surface2); color: var(--text); }
+
+    nav .icon { font-size: 15px; }
+
+    main {
+      padding: 32px;
+      max-width: 860px;
+    }
+
+    .tab { display: none; }
+    .tab.active { display: block; }
+
+    h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin-bottom: 24px;
+      font-size: 13px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"], textarea, select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 9px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus, textarea:focus, select:focus {
+      border-color: var(--accent);
+    }
+
+    textarea { resize: vertical; min-height: 80px; }
+
+    .field { margin-bottom: 16px; }
+
+    .hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .checkbox-row input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .checkbox-row span { font-size: 13px; }
+
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 9px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.88; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn.secondary {
+      background: var(--surface2);
+      color: var(--text);
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .result {
+      margin-top: 20px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .result-header {
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .result-header.success { background: rgba(52,211,153,0.1); border-bottom: 1px solid rgba(52,211,153,0.2); }
+    .result-header.error   { background: rgba(248,113,113,0.1); border-bottom: 1px solid rgba(248,113,113,0.2); }
+    .result-header.success .dot { color: var(--success); }
+    .result-header.error   .dot { color: var(--danger); }
+
+    .result-body { padding: 16px; background: var(--surface); }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .meta-item { background: var(--surface2); border-radius: var(--radius); padding: 12px; }
+    .meta-item .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .meta-item .v { font-size: 14px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+    .meta-item .v.success { color: var(--success); }
+    .meta-item .v.warning { color: var(--warning); }
+    .meta-item .v.danger  { color: var(--danger); }
+
+    .pr-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      padding: 8px 16px;
+      border-radius: var(--radius);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      transition: opacity 0.15s;
+    }
+
+    .pr-link:hover { opacity: 0.8; }
+
+    .error-detail {
+      font-size: 13px;
+      color: var(--danger);
+      line-height: 1.5;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th {
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .pill.success { background: rgba(52,211,153,0.15); color: var(--success); }
+    .pill.warning { background: rgba(251,191,36,0.15); color: var(--warning); }
+    .pill.danger  { background: rgba(248,113,113,0.15); color: var(--danger); }
+
+    .mono { font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }
+
+    .section-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 48px;
+      color: var(--muted);
+    }
+
+    .empty-state .icon { font-size: 32px; margin-bottom: 8px; }
+
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 24px 0;
+    }
+
+    select {
+      cursor: pointer;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      font-size: 13px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      z-index: 999;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { border-color: rgba(52,211,153,0.4); color: var(--success); }
+    .toast.error   { border-color: rgba(248,113,113,0.4); color: var(--danger); }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>DocAgent Harness</h1>
+  <span class="badge">GitHub Edition</span>
+</header>
+
+<div class="layout">
+  <nav>
+    <button class="active" onclick="switchTab('generate', this)">
+      <span class="icon">⚡</span> Generate
+    </button>
+    <button onclick="switchTab('runs', this)">
+      <span class="icon">📋</span> Recent Runs
+    </button>
+    <button onclick="switchTab('ledger', this)">
+      <span class="icon">📖</span> Ledger
+    </button>
+  </nav>
+
+  <main>
+    <!-- GENERATE TAB -->
+    <div id="tab-generate" class="tab active">
+      <h2>Generate Documentation</h2>
+      <p class="subtitle">Point the agent at a GitHub repo and file paths — it will fetch, document, verify, and open a PR.</p>
+
+      <div class="card">
+        <div class="field">
+          <label>Repository</label>
+          <input type="text" id="repo" placeholder="owner/repo-name" />
+          <p class="hint">Full GitHub repo name, e.g. <code>kennethreitz/requests-html</code></p>
+        </div>
+
+        <div class="field">
+          <label>File Paths</label>
+          <textarea id="files" placeholder="requests_html.py&#10;utils/helpers.py"></textarea>
+          <p class="hint">One file path per line. Ignored when Auto Crawl is enabled.</p>
+        </div>
+
+        <div class="checkbox-row">
+          <input type="checkbox" id="auto-crawl" />
+          <span>Auto Crawl — let the agent discover files itself</span>
+        </div>
+
+        <button class="btn" id="gen-btn" onclick="generateDocs()">
+          <span>Generate &amp; Open PR</span>
+        </button>
+      </div>
+
+      <div id="gen-result" style="display:none"></div>
+    </div>
+
+    <!-- RUNS TAB -->
+    <div id="tab-runs" class="tab">
+      <div class="section-actions">
+        <div>
+          <h2>Recent Runs</h2>
+          <p class="subtitle">Last 20 agent executions from the observability log.</p>
+        </div>
+        <button class="btn secondary" onclick="loadRuns()">↻ Refresh</button>
+      </div>
+
+      <div class="card" style="padding:0; overflow:hidden">
+        <div id="runs-content">
+          <div class="empty-state"><div class="icon">📋</div>Click Refresh to load runs.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEDGER TAB -->
+    <div id="tab-ledger" class="tab">
+      <div class="section-actions">
+        <div>
+          <h2>Mistake Ledger</h2>
+          <p class="subtitle">All recorded mistakes and their corrections — patched into the agent guide automatically.</p>
+        </div>
+        <button class="btn secondary" onclick="loadLedger()">↻ Refresh</button>
+      </div>
+
+      <div class="card" style="padding:0; overflow:hidden; margin-bottom:24px">
+        <div id="ledger-content">
+          <div class="empty-state"><div class="icon">📖</div>Click Refresh to load ledger.</div>
+        </div>
+      </div>
+
+      <hr class="divider" />
+
+      <h2>Log a Correction</h2>
+      <p class="subtitle">Manually record a mistake and patch it into AGENTS.md immediately.</p>
+
+      <div class="card">
+        <div class="field">
+          <label>Run ID</label>
+          <input type="text" id="corr-run-id" placeholder="run-abc123" />
+        </div>
+
+        <div class="field">
+          <label>Failure Type</label>
+          <select id="corr-failure-type">
+            <option value="hallucination">hallucination</option>
+            <option value="low_confidence">low_confidence</option>
+            <option value="guardrail_violation">guardrail_violation</option>
+            <option value="github_error">github_error</option>
+            <option value="tool_error">tool_error</option>
+            <option value="other">other</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>Description</label>
+          <textarea id="corr-description" placeholder="What went wrong?"></textarea>
+        </div>
+
+        <div class="field">
+          <label>Correction</label>
+          <textarea id="corr-correction" placeholder="What should the agent do instead?"></textarea>
+        </div>
+
+        <button class="btn" id="corr-btn" onclick="submitCorrection()">
+          <span>Log Correction</span>
+        </button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+  function switchTab(name, btn) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    btn.classList.add('active');
+
+    if (name === 'runs') loadRuns();
+    if (name === 'ledger') loadLedger();
+  }
+
+  function showToast(msg, type = 'success') {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + type;
+    setTimeout(() => t.className = 'toast', 3000);
+  }
+
+  function confidenceColor(val) {
+    if (val === null || val === undefined) return '';
+    return val >= 0.75 ? 'success' : val >= 0.5 ? 'warning' : 'danger';
+  }
+
+  function fmtDate(s) {
+    if (!s) return '—';
+    try { return new Date(s).toLocaleString(); } catch { return s; }
+  }
+
+  async function generateDocs() {
+    const repo = document.getElementById('repo').value.trim();
+    const filesRaw = document.getElementById('files').value.trim();
+    const autoCrawl = document.getElementById('auto-crawl').checked;
+
+    if (!repo) { showToast('Repository is required.', 'error'); return; }
+
+    const file_paths = filesRaw ? filesRaw.split('\n').map(s => s.trim()).filter(Boolean) : [];
+
+    const btn = document.getElementById('gen-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<div class="spinner"></div> Running…';
+
+    document.getElementById('gen-result').style.display = 'none';
+
+    try {
+      const res = await fetch('/generate-docs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo_full_name: repo, file_paths, auto_crawl: autoCrawl }),
+      });
+
+      const data = await res.json();
+      const el = document.getElementById('gen-result');
+      el.style.display = 'block';
+
+      if (res.ok) {
+        const conf = data.confidence;
+        const prUrl = data.pr_url;
+        el.innerHTML = `
+          <div class="result">
+            <div class="result-header success"><span class="dot">●</span> Documentation generated &amp; PR opened</div>
+            <div class="result-body">
+              <div class="meta-grid">
+                <div class="meta-item">
+                  <div class="k">Run ID</div>
+                  <div class="v mono">${data.run_id ?? '—'}</div>
+                </div>
+                <div class="meta-item">
+                  <div class="k">Confidence</div>
+                  <div class="v ${confidenceColor(conf)}">${conf != null ? (conf * 100).toFixed(0) + '%' : '—'}</div>
+                </div>
+                <div class="meta-item">
+                  <div class="k">Verified</div>
+                  <div class="v ${data.verified ? 'success' : 'danger'}">${data.verified ? 'Yes' : 'No'}</div>
+                </div>
+                <div class="meta-item">
+                  <div class="k">Tools Used</div>
+                  <div class="v">${data.tools_used ?? '—'}</div>
+                </div>
+              </div>
+              ${prUrl ? `<a class="pr-link" href="${prUrl}" target="_blank">↗ View Pull Request</a>` : ''}
+            </div>
+          </div>`;
+      } else {
+        const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail, null, 2);
+        el.innerHTML = `
+          <div class="result">
+            <div class="result-header error"><span class="dot">●</span> Harness rejected the output</div>
+            <div class="result-body">
+              <p class="error-detail">${detail.replace(/\n/g, '<br>')}</p>
+            </div>
+          </div>`;
+      }
+    } catch (err) {
+      document.getElementById('gen-result').style.display = 'block';
+      document.getElementById('gen-result').innerHTML = `
+        <div class="result">
+          <div class="result-header error"><span class="dot">●</span> Network error</div>
+          <div class="result-body"><p class="error-detail">${err.message}</p></div>
+        </div>`;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<span>Generate &amp; Open PR</span>';
+    }
+  }
+
+  async function loadRuns() {
+    const el = document.getElementById('runs-content');
+    el.innerHTML = '<div class="empty-state"><div class="spinner" style="margin:0 auto;width:20px;height:20px;border-color:var(--border);border-top-color:var(--accent)"></div></div>';
+    try {
+      const res = await fetch('/runs');
+      const data = await res.json();
+      const runs = data.runs ?? [];
+      if (!runs.length) {
+        el.innerHTML = '<div class="empty-state"><div class="icon">📋</div>No runs recorded yet.</div>';
+        return;
+      }
+      el.innerHTML = `
+        <table>
+          <thead><tr>
+            <th>Run ID</th><th>Repo</th><th>Confidence</th><th>Status</th><th>PR</th><th>Created</th>
+          </tr></thead>
+          <tbody>
+            ${runs.map(r => {
+              const conf = r.confidence;
+              const status = r.status ?? (r.verified ? 'passed' : 'failed');
+              const statusClass = status === 'passed' || status === 'success' ? 'success' : 'danger';
+              return `<tr>
+                <td class="mono">${r.run_id ?? '—'}</td>
+                <td>${r.repo_full_name ?? '—'}</td>
+                <td><span class="pill ${confidenceColor(conf)}">${conf != null ? (conf * 100).toFixed(0) + '%' : '—'}</span></td>
+                <td><span class="pill ${statusClass}">${status}</span></td>
+                <td>${r.pr_url ? `<a class="pr-link" href="${r.pr_url}" target="_blank" style="padding:4px 10px;font-size:12px">↗ PR</a>` : '—'}</td>
+                <td style="color:var(--muted);font-size:12px">${fmtDate(r.created_at)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+    } catch (err) {
+      el.innerHTML = `<div class="empty-state" style="color:var(--danger)">${err.message}</div>`;
+    }
+  }
+
+  async function loadLedger() {
+    const el = document.getElementById('ledger-content');
+    el.innerHTML = '<div class="empty-state"><div class="spinner" style="margin:0 auto;width:20px;height:20px;border-color:var(--border);border-top-color:var(--accent)"></div></div>';
+    try {
+      const res = await fetch('/ledger');
+      const data = await res.json();
+      const entries = data.entries ?? [];
+      if (!entries.length) {
+        el.innerHTML = '<div class="empty-state"><div class="icon">📖</div>No ledger entries yet.</div>';
+        return;
+      }
+      el.innerHTML = `
+        <table>
+          <thead><tr>
+            <th>Run ID</th><th>Type</th><th>Description</th><th>Correction</th><th>Injected</th><th>Date</th>
+          </tr></thead>
+          <tbody>
+            ${entries.map(e => `<tr>
+              <td class="mono">${e.run_id ?? '—'}</td>
+              <td><span class="pill warning">${e.failure_type ?? '—'}</span></td>
+              <td style="max-width:200px;word-break:break-word">${e.description ?? '—'}</td>
+              <td style="max-width:200px;word-break:break-word;color:var(--muted)">${e.correction ?? '—'}</td>
+              <td>${e.injected ? '<span class="pill success">yes</span>' : '<span class="pill">no</span>'}</td>
+              <td style="color:var(--muted);font-size:12px">${fmtDate(e.created_at)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+    } catch (err) {
+      el.innerHTML = `<div class="empty-state" style="color:var(--danger)">${err.message}</div>`;
+    }
+  }
+
+  async function submitCorrection() {
+    const run_id     = document.getElementById('corr-run-id').value.trim();
+    const failure_type = document.getElementById('corr-failure-type').value;
+    const description  = document.getElementById('corr-description').value.trim();
+    const correction   = document.getElementById('corr-correction').value.trim();
+
+    if (!run_id || !description || !correction) {
+      showToast('Run ID, description, and correction are required.', 'error');
+      return;
+    }
+
+    const btn = document.getElementById('corr-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<div class="spinner"></div> Submitting…';
+
+    try {
+      const res = await fetch('/ledger/correct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id, failure_type, description, correction }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.injected_into_agents_md ? 'Correction logged and patched into AGENTS.md.' : 'Correction logged.', 'success');
+        document.getElementById('corr-run-id').value = '';
+        document.getElementById('corr-description').value = '';
+        document.getElementById('corr-correction').value = '';
+      } else {
+        showToast(data.detail ?? 'Error submitting correction.', 'error');
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<span>Log Correction</span>';
+    }
+  }
+</script>
+</body>
+</html>
