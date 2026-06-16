@@ -39,6 +39,11 @@ _KNOWN_SAFE_NAMES = {
     "keyerror", "exception", "runtimeerror", "permissionerror", "none",
     "true", "false", "null", "undefined", "console", "promise", "json",
     "raises", "returns", "args", "kwargs", "self", "init", "main",
+    # Agent tool names that may appear in prose descriptions
+    "fetch_code_snippet", "write_doc_section", "search_existing_docs",
+    # Common tech/language names that match CamelCase but are not code symbols
+    "javascript", "typescript", "github", "markdown", "fastapi", "langchain",
+    "gemini", "python", "chromadb", "openai", "pydantic", "uvicorn",
 }
 
 

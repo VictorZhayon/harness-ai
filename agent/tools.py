@@ -75,6 +75,38 @@ def _extract_python(source: str, function_name: str) -> str | None:
     return None
 
 
+def _list_python_symbols(source: str) -> list[str]:
+    """Return all top-level function and class names in a Python file."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    return [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+
+
+def _list_js_symbols(source: str) -> list[str]:
+    """Return function/class names found in a JS/TS file via declaration scan."""
+    patterns = [
+        re.compile(r"^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(", re.MULTILINE),
+        re.compile(r"^[ \t]*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b", re.MULTILINE),
+        re.compile(r"^[ \t]*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(", re.MULTILINE),
+        re.compile(r"^[ \t]*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function\b", re.MULTILINE),
+    ]
+    names: list[str] = []
+    seen: set[str] = set()
+    for pat in patterns:
+        for m in pat.finditer(source):
+            name = m.group(1)
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
+
+
 def _extract_js_like(source: str, function_name: str) -> str | None:
     """Extract a function/class from JS/TS source via declaration match +
     brace counting. Naive, but good enough to ground documentation."""
@@ -132,9 +164,14 @@ def fetch_code_snippet(file_path: str, function_name: str) -> str:
         snippet = _extract_js_like(source, function_name)
 
     if snippet is None:
+        if real_path.endswith(".py"):
+            available = _list_python_symbols(source)
+        else:
+            available = _list_js_symbols(source)
+        names_str = ", ".join(available) if available else "(none found)"
         return (
             f"ERROR: '{function_name}' not found in '{real_path}'. "
-            "Use exact names as they appear in the file."
+            f"Available symbols: {names_str}"
         )
     return f"# Source: {real_path} :: {function_name}\n{snippet}"
 
