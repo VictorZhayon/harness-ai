@@ -82,6 +82,7 @@ def run_harnessed_agent(
     repo_full_name: str,
     file_paths: list[str],
     auto_crawl: bool = False,
+    create_pr: bool = True,
 ) -> dict:
     run_id = str(uuid.uuid4())
     started = time.perf_counter()
@@ -247,13 +248,15 @@ def run_harnessed_agent(
     # STEP 8 — GITHUB INTEGRATION: PR Writer
     # Only verified, guardrail-clean sections ever reach a pull request.
     # ------------------------------------------------------------------
-    pr_url = create_docs_pr(
-        repo_full_name,
-        ctx.staged_docs,
-        run_id,
-        confidence=verification.confidence,
-        files_documented=sorted(ctx.fetched_files),
-    )
+    pr_url = None
+    if create_pr:
+        pr_url = create_docs_pr(
+            repo_full_name,
+            ctx.staged_docs,
+            run_id,
+            confidence=verification.confidence,
+            files_documented=sorted(ctx.fetched_files),
+        )
 
     # ------------------------------------------------------------------
     # STEP 9 — HARNESS LAYER: Observability — record the successful run.
@@ -264,5 +267,5 @@ def run_harnessed_agent(
     # STEP 10 — Return the metadata envelope with the PR URL.
     # ------------------------------------------------------------------
     return build_envelope(
-        run_id, [c["tool"] for c in ctx.tools_called], verification, pr_url=pr_url, output=summary
+        run_id, [c["tool"] for c in ctx.tools_called], verification, pr_url=pr_url, output=draft if not create_pr else summary
     )

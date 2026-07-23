@@ -392,6 +392,11 @@
           <span>Auto Crawl — let the agent discover files itself</span>
         </div>
 
+        <div class="checkbox-row">
+          <input type="checkbox" id="create-pr" checked />
+          <span>Create Pull Request (Requires Write Access)</span>
+        </div>
+
         <button class="btn" id="gen-btn" onclick="generateDocs()">
           <span>Generate &amp; Open PR</span>
         </button>
@@ -508,6 +513,7 @@
     const repo = document.getElementById('repo').value.trim();
     const filesRaw = document.getElementById('files').value.trim();
     const autoCrawl = document.getElementById('auto-crawl').checked;
+    const createPr = document.getElementById('create-pr').checked;
 
     if (!repo) { showToast('Repository is required.', 'error'); return; }
 
@@ -523,7 +529,7 @@
       const res = await fetch('/generate-docs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo_full_name: repo, file_paths, auto_crawl: autoCrawl }),
+        body: JSON.stringify({ repo_full_name: repo, file_paths, auto_crawl: autoCrawl, create_pr: createPr }),
       });
 
       const data = await res.json();
@@ -556,6 +562,7 @@
                 </div>
               </div>
               ${prUrl ? `<a class="pr-link" href="${prUrl}" target="_blank">↗ View Pull Request</a>` : ''}
+              ${!createPr && data.output ? `<div style="margin-top: 16px;"><h4>Generated Documentation:</h4><pre style="background:var(--bg);padding:12px;border-radius:4px;overflow-x:auto;white-space:pre-wrap;font-size:12px;margin-top:8px;">${data.output.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></div>` : ''}
             </div>
           </div>`;
       } else {

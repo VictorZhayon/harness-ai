@@ -44,6 +44,7 @@ class GenerateDocsRequest(BaseModel):
     repo_full_name: str = Field(..., description="GitHub repo, e.g. 'owner/repo-name'")
     file_paths: list[str] = Field(default_factory=list, description="Files to document")
     auto_crawl: bool = Field(False, description="Ignore file_paths and crawl the repo tree")
+    create_pr: bool = Field(True, description="Whether to open a pull request on GitHub")
 
 
 class CorrectionRequest(BaseModel):
@@ -61,7 +62,7 @@ def generate_docs(body: GenerateDocsRequest):
         raise HTTPException(status_code=422, detail="Provide file_paths or set auto_crawl=true.")
 
     try:
-        return run_harnessed_agent(body.repo_full_name, body.file_paths, body.auto_crawl)
+        return run_harnessed_agent(body.repo_full_name, body.file_paths, body.auto_crawl, body.create_pr)
     except HarnessRejection as rejection:
         # HARNESS LAYER: Guardrails — blocked output never reaches the user
         # as a success; the caller gets a structured explanation instead.

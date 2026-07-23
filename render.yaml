@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: docagent-harness
+    env: python
+    region: ohio # You can change this to your preferred region
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: GOOGLE_API_KEY
+        sync: false # Render will prompt you to provide this value in their dashboard
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: GITHUB_PAT
+        sync: false
